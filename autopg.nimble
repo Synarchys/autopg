@@ -11,4 +11,4 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 0.20.9"
-requires "pgschemautils >= 0.1.0"
+requires "https://github.com/ivanflorentin/pg_schema_utils"
