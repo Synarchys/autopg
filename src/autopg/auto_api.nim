@@ -4,12 +4,12 @@ import readschema
 
 import noah / webcontext
 
-let headers = newHttpHeaders([("Content-Type","application/json")])
 proc auto_api*(db: DbConn, ctx: WebContext): WebContext =
   ## Given a WebContext and a Postgres DB Connection, creates an
   ## automatic RERT API over each table in the public schema
   ## `/schema`  returns the actual schema of the database
-  try: 
+  try:
+    let headers = newHttpHeaders([("Content-Type","application/json")])
     result = ctx.copy()
     #let dbname = os.getEnv("DATABASE_NAME")
     let schema = db.get_tables()
@@ -20,7 +20,9 @@ proc auto_api*(db: DbConn, ctx: WebContext): WebContext =
     echo "\ntables: " & $tables & "\n====\n"
     let tname = ctx.request.urlpath[1]
     if tname == "schema":
-      result.response.body = $db.readTables().toJson()
+      let schema = db.readTables().toJson()
+      #echo schema.pretty()
+      result.response.body  = $schema
       result.response.headers = headers
       result.response.status = Http200
       return
@@ -58,6 +60,7 @@ proc auto_api*(db: DbConn, ctx: WebContext): WebContext =
       result.response.headers = headers
   except:
     echo getCurrentExceptionMsg()
+    let headers = newHttpHeaders([("Content-Type","application/json")])
     echo $result
     echo"-----"
     result.response.body = """{"status":"error", "code": 500, "message":"internal error"}"""
