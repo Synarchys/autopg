@@ -5,7 +5,8 @@ author        = "Ivan Florentin"
 description   = "Automatic REsT API over PostgreSQL database"
 license       = "MIT"
 srcDir        = "src"
-
+installExt    = @["nim"]
+bin           = @["autopg_tools"]
 
 
 # Dependencies
