@@ -12,4 +12,4 @@ bin           = @["autopg_tools"]
 # Dependencies
 
 requires "nim >= 0.20.9"
-requires "https://github.com/ivanflorentin/pg_schema_utils"
+requires "https://github.com/synarchys/pgschemautils.git"
