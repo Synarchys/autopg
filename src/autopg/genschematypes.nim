@@ -1,15 +1,15 @@
 
 import strutils, sequtils, strformat, db_postgres, sugar, os, parseutils, json
       
-import autopg / auto_pg
+import ../ autopg / auto_pg
 import db_postgres
 
 
-proc usage() =
+proc usage*() =
   echo "Usage: "
-  echo "genschematypes -o:<dir> <dburl>"
-  echo "Example"
-  echo "genschematypes -o: mydir/ postgresql://user:secret@localhost"
+  echo "\tautopg_tools -o:<dir> <dburl>"
+  echo "Example:"
+  echo "\tautopg_tools -o: mydir/ postgresql://user:secret@localhost/mydb"
   quit()
 
 
@@ -57,20 +57,3 @@ proc genSchemaFile*(dir, dburl: string) =
       f.writeLine ""
   echo fmt"{filename} genetared..."
   echo "------------------------------------------------"
-
-  
-
-# when declared(commandLineParams):
-#   var
-#     dir: string
-#     dburl: string
-#   let params = commandLineParams()
-#   if params.len <= 0:
-#     usage()  
-    
-#   for param in params:
-#     if param.startsWith "-o:":
-#       dir = param.split(":")[1]
-#     elif param != "":
-#       dburl = param
-#   genSchemaFile(dir, dburl)

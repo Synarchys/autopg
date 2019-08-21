@@ -13,3 +13,4 @@ bin           = @["autopg_tools"]
 
 requires "nim >= 0.20.9"
 requires "https://github.com/synarchys/pgschemautils.git"
+requires "https://github.com/ivanflorentin/noah.git"
