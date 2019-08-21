@@ -134,17 +134,18 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
                 values = values & $item[c.name].getFloat & ", "
               else: 
                 values = values & qt & item[c.name].getStr() & qt & ", "
-        values.delete(values.len - 1, values.len)
+        values.delete(values.len - 2, values.len)
         values = values & " ), "
-      values.delete(values.len - 1, values.len)  
+      values.delete(values.len - 2, values.len)  
       var statement = "INSERT INTO " & db_table & " ("
       for c in columns:
         statement = statement & c.name & ", "
-      statement.delete(statement.len - 1, statement.len)
+      statement.delete(statement.len - 2, statement.len)
       statement = statement & ") VALUES " & values
       echo "SQL:" & $statement & "\n-----------\n" 
 
       pg.exec(sql(statement))
+      echo "executed"
       result = %*{ "inserted": data.len}
 
 proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
