@@ -139,7 +139,7 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
       values.delete(values.len - 2, values.len)  
       var statement = "INSERT INTO " & db_table & " ("
       for c in columns:
-        statement = statement & c.name & ", "
+        statement = statement & "\"" & c.name & "\"" & ", "
       statement.delete(statement.len - 2, statement.len)
       statement = statement & ") VALUES " & values
       echo "SQL:" & $statement & "\n-----------\n" 
