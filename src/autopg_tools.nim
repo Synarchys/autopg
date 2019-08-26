@@ -16,6 +16,10 @@ when declared(commandLineParams):
       dir = param.split(":")[1]
     elif param != "":
       dburl = param
+
+  if dir == "":
+    dir = "."
+    
   genSchemaFile(dir, dburl)
   
 else:

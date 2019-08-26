@@ -54,6 +54,7 @@ proc genSchemaFile*(dir, dburl: string) =
     for c in columns:
       #if c.name == t.name:
       f.writeLine fmt"    {c.name}* : {c.ctype.toNimType()}"
-      f.writeLine ""
+    f.writeLine ""
+    f.writeLine ""
   echo fmt"{filename} genetared..."
   echo "------------------------------------------------"
