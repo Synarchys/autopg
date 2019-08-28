@@ -194,7 +194,8 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
             echo "Column name: " & c.name & " || type: " & c.ctype
             var qt = "'"
             if not item.haskey(c.name) or item[c.name].kind == JNull:
-              setClause = setClause & c.name & " =  null " & ", "
+              #setClause = setClause & c.name & " =  null " & ", "
+              discard
             else:
               setClause = setClause & c.name & " = " 
               case c.ctype:
@@ -207,10 +208,13 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
                 of "numeric":
                   setClause = setClause & $item[c.name].getFloat & ", "
                 else: 
-                  setClause = setClause & dbQuote(item[c.name].getStr()) & ", "     
-          setClause.delete(setClause.len - 1, setClause.len)
+                  setClause = setClause & dbQuote(item[c.name].getStr()) & ", "
+
+          let lastComma = setClause.rfind(",")
+          setClause.delete(lastComma, lastComma + 1)
           var statement = "UPDATE " & db_table & " SET " & setClause &
             " WHERE id =  " & dbQuote(item["id"].getStr())
+          
           pg.exec(sql(statement))
           result = %*{ "updated": data.len}
     else:
