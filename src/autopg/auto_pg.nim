@@ -193,10 +193,11 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
           for c in columns:
             echo "Column name: " & c.name & " || type: " & c.ctype
             var qt = "'"
-            if not item.haskey(c.name) or item[c.name].kind == JNull:
-              #setClause = setClause & c.name & " =  null " & ", "
-              discard
-            else:
+            if item.haskey(c.name) and item[c.name].kind == JNull:
+              # sets to NULL if the column name is passed and its value is JNull
+              # used to delete the value of a column
+              setClause = setClause & c.name & " =  null " & ", "
+            elif item.haskey(c.name):
               setClause = setClause & c.name & " = " 
               case c.ctype:
                 of "int":
