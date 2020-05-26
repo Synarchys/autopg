@@ -18,18 +18,19 @@ type
     ## Simplest schema column representation
     name*: string
     ctype*: string
+    precision*: int
+    length*: int
   DBTable* = object
     ## Simplest table schema representation
     name*: string 
     columns*: seq[DBColumn]
     
-
 proc get_columns*(pg:DbConn, db_table: string): seq[DBColumn] =
   ## Gets all columns from a given table
   result = @[]
   let rows = pg.getAllRows(sql"""
      select
-      column_name, data_type
+      column_name, data_type, numeric_precision, character_maximum_length
      from
        information_schema.columns
      where
@@ -38,7 +39,16 @@ proc get_columns*(pg:DbConn, db_table: string): seq[DBColumn] =
        and table_schema = 'public'
     """, db_table)
   for r in rows:
-    result.add(DBColumn(name:r[0], ctype:r[1]))
+    var column = DBColumn(name:r[0], ctype:r[1])
+    case column.ctype
+    of "text", "character varying", "varchar":
+      if r[3] != "":
+        column.length = parseInt r[3]
+    of "numeric", "double precision":
+      if r[2] != "":
+        column.precision = parseInt r[2]
+    #, precision: r[2], length: r[3]
+    result.add(column)
   
 proc get_tables*(pg:DbConn): seq[DBTable] =
   result = @[]
@@ -93,8 +103,9 @@ proc get_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
     result = parseJson($rows[0][0])
   else:
     result = %*{"message": "No rows found"}
-  
-proc post_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
+
+               
+proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): JsonNode =
   ## Inserts the contents of a JsonNode into a table. the format of the Json
   ## data is:
   ##
@@ -104,10 +115,13 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   ## Fields not present in the data item are leaved for the table's default
   ##
   ## Fields not existing in the database are silently ignored
+
+
   echo "\n\n---------\nDATA:" & $d
   let db_schema = pg.get_tables()
   if d.kind == JObject:
     for k, v in d:
+      var insertColumns: seq[DBColumn] # the columns to be inserted
       let data = v
       let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
       var columns: seq[DBColumn]
@@ -120,25 +134,31 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
         values = values & " ("
         for c in columns:
           var qt = "'"
-          if not item.haskey(c.name) or item[c.name].kind == JNull:
+          if insertNull and (not item.haskey(c.name) or item[c.name].kind == JNull):
             values = values & " null " & ", "
-          else: 
+            insertColumns.add c
+          elif item.haskey(c.name):
+            insertColumns.add c
             case c.ctype:
-              of "int":
+              of "int", "integer", "bigint":
                 values = values & $item[c.name].getInt() & ", "
               of "smallint":
                 values = values & $item[c.name].getInt() & ", "
               of "boolean":
                 values = values & $item[c.name].getBool() & ", "
-              of "numeric":
+              of "numeric", "double precision":
                 values = values & $item[c.name].getFloat & ", "
-              else: 
+              else:
+                # echo "---------------------------------------------------------------------"
+                # echo "Unhandled type: " & c.ctype
+                # echo "---------------------------------------------------------------------"
                 values = values & qt & item[c.name].getStr() & qt & ", "
+                
         values.delete(values.len - 2, values.len)
         values = values & " ), "
       values.delete(values.len - 2, values.len)  
       var statement = "INSERT INTO " & db_table & " ("
-      for c in columns:
+      for c in insertColumns:
         statement = statement & "\"" & c.name & "\"" & ", "
       statement.delete(statement.len - 2, statement.len)
       statement = statement & ") VALUES " & values
