@@ -1,6 +1,7 @@
 
 import strutils, sequtils, strformat, db_postgres, sugar, os, parseutils, json
-      
+
+import unicode
 import ../ autopg / auto_pg
 import db_postgres
 
@@ -9,29 +10,32 @@ proc usage*() =
   echo "Usage: "
   echo "\tautopg_tools -o:<dir> <dburl>"
   echo "Example:"
-  echo "\tautopg_tools -o: mydir/ postgresql://user:secret@localhost/mydb"
+  echo "\tautopg_tools -o:mydir/ postgresql://user:secret@localhost/mydb"
   quit()
 
 
 proc toNimType(tname: string): string =
   case tname:
-    of "uuid": result = "string"
-    of "bool", "boolean": result = "bool"
-    of "text": result = "string"
-    of "integer": result = "int64"
-    of "smallint": result = "int16"
+    of "uuid":
+      result = "string"
+    of "bool", "boolean":
+      result = "bool"
+    of "text", "character varying", "varchar", "character", "char":
+      result = "string"
+    of "integer", "numeric", "double precision":
+      result = "int64"
+    of "smallint":
+      result = "int16"
+    of "timestamp", "timestamp without time zone", "timestamp with time zone":
+      result = "Time"
+    of "date", "datetime" :
+      result = "DateTime"
     else:
-      result = "=========== " & tname
-  if tname.find("varchar") >= 0:
-    result = "string"
-  if tname.find("numeric") >= 0:
-    result = "float64"
-  if tname.find("char") >= 0:
-    result = "string"
-  if tname.contains("timestamp") or tname.contains("date") :
-    result = "DateTime"
-
-
+      result = "Type " & tname & " Not Found"
+      echo "======================================================="
+      echo result
+      echo "======================================================="
+    
 proc genSchemaFile*(dir, dburl: string) =
   if dir == "" or dburl == "":
     usage()
@@ -48,13 +52,17 @@ proc genSchemaFile*(dir, dburl: string) =
   f.writeLine "type"
   let tables = db.get_tables()
   for t in tables:
-    echo fmt"  Generating type for {t.name}"
-    f.writeLine fmt"  {t.name.capitalizeAscii()}* = ref object"
+    let typeName = t.name
+    echo fmt"  Generating type for table {t.name}"
+    echo "  Type " & typeName
+    f.writeLine fmt"  {typeName}* = ref object"
     let columns = db.get_columns(t.name)
     for c in columns:
-      #if c.name == t.name:
-      f.writeLine fmt"    {c.name}* : {c.ctype.toNimType()}"
+      let cName = c.name
+      f.writeLine fmt"    {cName}*: {c.ctype.toNimType()}"
     f.writeLine ""
-    f.writeLine ""
+
   echo fmt"{filename} genetared..."
   echo "------------------------------------------------"
+
+  
