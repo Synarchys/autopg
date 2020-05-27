@@ -1,6 +1,6 @@
 
 import os, strutils
-import src / autopg / genschematypes
+import autopg / genschematypes
 
 
 when declared(commandLineParams):
