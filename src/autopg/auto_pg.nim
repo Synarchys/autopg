@@ -136,9 +136,12 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): Json
           var qt = "'"
           if insertNull and (not item.haskey(c.name) or item[c.name].kind == JNull):
             values = values & " null " & ", "
-            insertColumns.add c
+            if not insertColumns.contains c:
+              insertColumns.add c
+            
           elif item.haskey(c.name):
-            insertColumns.add c
+            if not insertColumns.contains c:
+              insertColumns.add c
             case c.ctype:
               of "int", "integer", "bigint":
                 values = values & $item[c.name].getInt() & ", "
