@@ -68,16 +68,16 @@ try:
     rUpdate = db.put_data(tableName, %*{"data": [item1, item2]})
     rUpdateGet = db.get_data(tableName)
 
-  echo rUpdateGet
   doAssert($rUpdate == """{"updated":2}""")
   doAssert($rUpdateGet == $(%*{"test_autopg":[item1, item2]}), "Update did not match expected result.")
   
-  # Upsert data
+  # Upsert data do nothing
   var item3 = item1.copy()
   item3["id"] = %2
   item3["col1"] = %"upserted inserted value"
   item3["col2"] = %false
-  
+
+  # inserts new data
   let
     upserted = db.upsert_data(tableName, %*{"data": [item3]})
     getUpserted = db.get_data(tableName)
@@ -87,13 +87,23 @@ try:
   
   item2["col1"] = %"upserted updated value"
   item2["col2"] = %true
-
+  
+  # on conflict does nothing
   let
     upserted1 = db.upsert_data(tableName, %*{"data": [item3]})
     getUpserted1 = db.get_data(tableName)
-
+    
   echo getUpserted1
-  doAssert($upserted == """{"upserted":1}""")
+  doAssert($upserted1 == """{"upserted":1}""")
+
+  # on conflict updates
+  let
+    upserted2 = db.upsert_data(tableName, %*{"data": [item3]}, onConflict=OnConflict.update)
+    getUpserted2 = db.get_data(tableName)
+
+  echo getUpserted2
+  doAssert($upserted2 == """{"upserted":1}""")
+
    
 except Exception as e:
   echo e.msg

@@ -206,17 +206,16 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): Js
   else:
     result = %*{"error_message": "invalid data"}
                
-proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true): (int, seq[string]) =
+proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, pk: string): seq[string] =
   let
     db_schema = pg.get_tables()
 
-  var
-    pks: Table[string, string]
-    pk: string
-      
-  if genWhere:
-      pks = get_primary_keys(pg)
-      pk = pks[db_table]
+  # var
+  #   pks: Table[string, string]
+  #   pk: string      
+  # if genWhere:
+  #     pks = get_primary_keys(pg)
+  #     pk = pks[db_table]
   
   if d.kind == JObject:
     for k, v in d:
@@ -226,7 +225,7 @@ proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true)
       if tables.len > 0:
         columns = tables[0].columns
       else:
-        result = (-1, @["invalid table"])
+        result = @["invalid table"]
       var
         setClause: string 
         statement: string
@@ -244,13 +243,13 @@ proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true)
           elif item.haskey(c.name):
             setClause = setClause & c.name & " = "
             setClause = setClause & genSQLValue(c, item)
-          if genWhere and pk != "" and c.name == pk:
+          if pk != "" and c.name == pk:
             whereStmt =  " WHERE " & db_table & "." & c.name & " = " & extractJSonVal(c, item)
 
         let lastComma = setClause.rfind(",")
         setClause.delete(lastComma, lastComma + 1)
         statements.add("SET " & setClause & whereStmt)
-      result = (data.len, statements)
+      result = statements
     
 proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   ## Updates the contents of a JsonNode into a table. the format of the Json
@@ -263,44 +262,59 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   ##
   ## Fields not existing in the database are silently ignored
   try:
-    let query = genSetStmt(pg, db_table, d)
-    if query[0] > -1:
-      for q in query[1]:
+    let
+      pks = get_primary_keys(pg)
+      pk = pks[db_table]
+      query = genSetStmt(pg, db_table, d, pk)
+    if query.len > 0:
+      for q in query:
         let stmt = "UPDATE " & db_table & " " & q
         pg.exec(sql(stmt))
-        result = %*{ "updated": query[0]}
+        result = %*{ "updated": query.len}
     else:
-      result = %*{"error_message": query[1]}
+      result = %*{"error_message": "Update failed."}
   except:
     let e = getCurrentException()
     echo e.getStackTrace()
     echo "==> ERROR: " & getCurrentExceptionMsg()
     result = %*{ "error": getCurrentExceptionMsg()}
 
-proc upsert_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
+type
+  OnConflict* = enum
+    update, nothing
+               
+proc upsert_data*(pg:DbConn, db_table: string, d: JsonNode,
+                  onConflict: OnConflict = OnConflict.nothing): JsonNode =
   # upserts on conflict on primary key
   echo "\n\n---------\nDATA:" & $d
-  let 
-    pks = get_primary_keys(pg)
+  let valClause = genValuesClause(pg, db_table, d, insertNull = false)
+  var
+    pk: string
+    setStmt: seq[string]
+    
+  if onConflict == OnConflict.update:
+    let pks = get_primary_keys(pg)
     pk = pks[db_table]
-    valClause = genValuesClause(pg, db_table, d, insertNull = false)
-    setStmt = genSetStmt(pg, db_table, d)
+    setStmt = genSetStmt(pg, db_table, d, pk)
 
   var indx = 0
   var query = ""
   while indx < valClause[1].len:
     query = "INSERT INTO " & db_table & " (" & valClause[0][indx].join(", ")
-    query.delete(query.len , query.len)
     query = query & " )"
     query = query & " VALUES " & valClause[1].join(", ")
     query.delete(query.len - 2, query.len)
-    query = query & " )"
-    query = query & " ON CONFLICT (" & pk & ") DO"
-    query = query & " UPDATE " & setStmt[1][indx]
-    indx += 1
+    query = query & ")"  
+    query = query & " ON CONFLICT"
+    case onConflict
+    of OnConflict.update:
+      query = query & " (" & pk & ") DO UPDATE " & setStmt[indx]
+    else:
+      query = query & " DO NOTHING"
+    indx += 1    
     pg.exec(sql(query))
     result = %*{ "upserted": valClause[0].len}
-                 
+           
 proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
   ## Deletes rows from a table given a list of ids as parameters
   ##
