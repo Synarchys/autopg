@@ -71,16 +71,15 @@ proc get_schema*(pg: DBConn): JsonNode =
   let tables = pg.get_tables()
   result = %* tables
   
-
-proc get_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
+proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil): JsonNode =
   ## Given a table and a query, returns a JsonNode containing the result.
   ##
   ## Only very rigid '=' queries are allowed now an\d can couse exceptios if
   ## the listed fields do not exist or are of a different type
   let db_schema = pg.get_tables()
   var whereClause = ""
-  echo ctx
-  if ctx.request.paramTable.len > 0 :
+  
+  if ctx != nil and ctx.request.paramTable.len > 0 :
     let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
     var columns: seq[DBColumn]
     if tables.len > 0:
@@ -104,8 +103,21 @@ proc get_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
   else:
     result = %*{"message": "No rows found"}
 
+proc extractJSonVal(c: DbColumn, item: JsonNode): string =
+    case c.ctype:
+    of "int", "integer", "bigint", "smallint":
+      result = $item[c.name].getInt()
+    of "boolean":
+      result = $item[c.name].getBool()
+    of "numeric", "double precision":
+      result = $item[c.name].getFloat
+    else:
+      result = dbQuote(item[c.name].getStr())
                
-proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): JsonNode =
+proc genSQLValue(c: DbColumn, item: JsonNode): string =
+  result = extractJSonVal(c, item) & ", "
+                     
+proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): JsonNode =
   ## Inserts the contents of a JsonNode into a table. the format of the Json
   ## data is:
   ##
@@ -115,7 +127,6 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): Json
   ## Fields not present in the data item are leaved for the table's default
   ##
   ## Fields not existing in the database are silently ignored
-
 
   echo "\n\n---------\nDATA:" & $d
   let db_schema = pg.get_tables()
@@ -141,22 +152,9 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): Json
             
           elif item.haskey(c.name):
             if not insertColumns.contains c:
-              insertColumns.add c
-            case c.ctype:
-              of "int", "integer", "bigint":
-                values = values & $item[c.name].getInt() & ", "
-              of "smallint":
-                values = values & $item[c.name].getInt() & ", "
-              of "boolean":
-                values = values & $item[c.name].getBool() & ", "
-              of "numeric", "double precision":
-                values = values & $item[c.name].getFloat & ", "
-              else:
-                # echo "---------------------------------------------------------------------"
-                # echo "Unhandled type: " & c.ctype
-                # echo "---------------------------------------------------------------------"
-                values = values & qt & item[c.name].getStr() & qt & ", "
-                
+              insertColumns.add c              
+            values = values & genSQLValue(c, item)
+
         values.delete(values.len - 2, values.len)
         values = values & " ), "
       values.delete(values.len - 2, values.len)  
@@ -165,8 +163,7 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull=true): Json
         statement = statement & "\"" & c.name & "\"" & ", "
       statement.delete(statement.len - 2, statement.len)
       statement = statement & ") VALUES " & values
-      echo "SQL:" & $statement & "\n-----------\n" 
-
+      echo "SQL:" & $statement & "\n-----------\n"
       pg.exec(sql(statement))
       echo "executed"
       result = %*{ "inserted": data.len}
@@ -185,7 +182,6 @@ proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
     statement.add ")"
   pg.exec(sql(statement))
   result = %*{"deleted": ctx.request.paramList.len}
-
 
 proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   ## Updates the contents of a JsonNode into a table. the format of the Json
@@ -208,38 +204,31 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
           columns = tables[0].columns
         else:
           result = %*{"error_message":"invalid table"}
-        var setClause: string 
-        var statement: string
+        var
+          setClause: string 
+          statement: string
+          whereStmt = " WHERE id = "
+        
         for item in data:
           setClause = ""
           statement = ""
           for c in columns:
-            echo "Column name: " & c.name & " || type: " & c.ctype
+            # echo "Column name: " & c.name & " || type: " & c.ctype
             var qt = "'"
             if item.haskey(c.name) and item[c.name].kind == JNull:
               # sets to NULL if the column name is passed and its value is JNull
               # used to delete the value of a column
               setClause = setClause & c.name & " =  null " & ", "
             elif item.haskey(c.name):
-              setClause = setClause & c.name & " = " 
-              case c.ctype:
-                of "int":
-                  setClause = setClause & $item[c.name].getInt() & ", "
-                of "smallint":
-                  setClause = setClause & $item[c.name].getInt() & ", "
-                of "boolean":
-                  setClause = setClause & $item[c.name].getBool() & ", "
-                of "numeric":
-                  setClause = setClause & $item[c.name].getFloat & ", "
-                else: 
-                  setClause = setClause & dbQuote(item[c.name].getStr()) & ", "
+              setClause = setClause & c.name & " = "
+              setClause = setClause & genSQLValue(c, item)
+            if c.name == "id":
+              # if there's no id there be no `where clause`, use pk from schema?
+              whereStmt =  whereStmt & extractJSonVal(c, item)
 
           let lastComma = setClause.rfind(",")
           setClause.delete(lastComma, lastComma + 1)
-          var statement = "UPDATE " & db_table & " SET " & setClause &
-            " WHERE id =  " & dbQuote(item["id"].getStr())
-          
-          pg.exec(sql(statement))
+          var statement = "UPDATE " & db_table & " SET " & setClause & whereStmt
           result = %*{ "updated": data.len}
     else:
       result = %*{ "error": "invalid format"}
