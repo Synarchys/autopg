@@ -106,8 +106,6 @@ proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil): JsonNode =
     else:
       result = %*{"error_message":"invalid table"}
       return
-    # knoledge date default is now()
-    # observation date default is now()
     let columnNames = columns.map do (c: DBColumn) -> string : c.name
     whereClause = " where "
     for key, value in ctx.request.paramTable:
@@ -136,7 +134,8 @@ proc extractJSonVal(c: DbColumn, item: JsonNode): string =
 proc genSQLValue(c: DbColumn, item: JsonNode): string =
   result = extractJSonVal(c, item) & ", "
 
-proc genInsertStmt(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): (int, string) =
+proc genValuesClause(pg:DbConn, db_table: string, d: JsonNode,
+                     insertNull = true): (seq[seq[string]], seq[string]) =
   ## Generates a sql statement for insertion
   ## data is:
   ## {"data": [ {<data item>}, {<data item>}, ...] }
@@ -144,46 +143,43 @@ proc genInsertStmt(pg:DbConn, db_table: string, d: JsonNode, insertNull = true):
   ## Fields not present in the data item are leaved for the table's default
   ##
   ## Fields not existing in the database are silently ignored
-  ## Returns statment, affected rows  
-  echo "\n\n---------\nDATA:" & $d
+  ## Returns statment, affected rows
   let db_schema = pg.get_tables()
   if d.kind == JObject:
     for k, v in d:
-      var insertColumns: seq[DBColumn] # the columns to be inserted
+      #var insertColumns: seq[DBColumn] # the columns to be inserted
+      var insertColumns: seq[seq[string]] = @[]
       let data = v
       let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
       var columns: seq[DBColumn]
       if tables.len > 0:
+        var vals: seq[string] = @[]
+        var cols: seq[string]
         columns = tables[0].columns
-      else:
-        # TODO
-        #result = %*{"error_message":"invalid table"}
-        result = (-1, "invalid table")
-      var values = ""
-      for item in data:
-        values = values & " ("
-        for c in columns:
-          var qt = "'"
-          if insertNull and (not item.haskey(c.name) or item[c.name].kind == JNull):
-            values = values & " null " & ", "
-            if not insertColumns.contains c:
-              insertColumns.add c
-            
-          elif item.haskey(c.name):
-            if not insertColumns.contains c:
-              insertColumns.add c              
+        var values = ""
+        var ic: seq[DBColumn]
+        for item in data:
+          ic = @[]
+          cols = @[]
+          values = "("
+          for c in columns:
+            if insertNull and (not item.haskey(c.name) or item[c.name].kind == JNull):
+              values = values & " null " & ", "
+              if not ic.contains c:
+                ic.add c
+            elif item.haskey(c.name):
+              if not ic.contains c:
+                ic.add c  
             values = values & genSQLValue(c, item)
-
-        values.delete(values.len - 2, values.len)
-        values = values & " ), "
-      values.delete(values.len - 2, values.len)  
-      var statement = "INSERT INTO " & db_table & " ("
-      for c in insertColumns:
-        statement = statement & "\"" & c.name & "\"" & ", "
-      statement.delete(statement.len - 2, statement.len)
-      statement = statement & ") VALUES " & values
-      result = (data.len, statement)
-      
+          values.delete(values.len - 2, values.len)
+          values = values & " )"
+          vals.add values
+          
+          for c in ic:
+            cols.add c.name
+          insertColumns.add cols
+        result = (insertColumns, vals)
+        
 proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): JsonNode =
   ## Inserts the contents of a JsonNode into a table. the format of the Json
   ## data is:
@@ -194,14 +190,23 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): Js
   ## Fields not present in the data item are leaved for the table's default
   ##
   ## Fields not existing in the database are silently ignored
-  let query = genInsertStmt(pg, db_table, d, insertNull)
-  if query[0] > -1:
-    pg.exec(sql(query[1]))
-    result = %*{ "inserted": query[0]}
+  echo "\n\n---------\nDATA:" & $d
+  let valClause = genValuesClause(pg, db_table, d, insertNull)
+  
+  if valClause[0].len > 0:
+    # TODO: if not null then make individual inserts
+    var query = "INSERT INTO " & db_table & " (" & valClause[0][0].join(", ")
+    query.delete(query.len , query.len)
+    query = query & " )"
+    query = query & " VALUES " & valClause[1].join(", ")
+    query.delete(query.len - 2, query.len)
+    query = query & " )"
+    pg.exec(sql(query))
+    result = %*{ "inserted": valClause[0].len}
   else:
-    result = %*{"error_message": query[1]}
+    result = %*{"error_message": "invalid data"}
                
-proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true): (int, string) =
+proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true): (int, seq[string]) =
   let
     db_schema = pg.get_tables()
 
@@ -221,17 +226,17 @@ proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true)
       if tables.len > 0:
         columns = tables[0].columns
       else:
-        result = (-1,"invalid table")
+        result = (-1, @["invalid table"])
       var
         setClause: string 
         statement: string
-        whereStmt: string        
+        whereStmt: string
+        statements:seq[string] = @[]
       for item in data:
         setClause = ""
         statement = ""
         whereStmt = ""        
         for c in columns:
-          # var qt = "'"
           if item.haskey(c.name) and item[c.name].kind == JNull:
             # sets to NULL if the column name is passed and its value is JNull
             # used to delete the value of a column
@@ -240,13 +245,12 @@ proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true)
             setClause = setClause & c.name & " = "
             setClause = setClause & genSQLValue(c, item)
           if genWhere and pk != "" and c.name == pk:
-            whereStmt =  " WHERE " & c.name & " = " & extractJSonVal(c, item)
+            whereStmt =  " WHERE " & db_table & "." & c.name & " = " & extractJSonVal(c, item)
 
         let lastComma = setClause.rfind(",")
         setClause.delete(lastComma, lastComma + 1)
-        # var statement = "UPDATE " & db_table & " SET " & setClause & whereStmt
-        let statement = "SET " & setClause & whereStmt
-        result = (data.len, statement)
+        statements.add("SET " & setClause & whereStmt)
+      result = (data.len, statements)
     
 proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   ## Updates the contents of a JsonNode into a table. the format of the Json
@@ -261,9 +265,10 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   try:
     let query = genSetStmt(pg, db_table, d)
     if query[0] > -1:
-      let stmt = "UPDATE " & db_table & & " " & query[1]
-      pg.exec(sql(stmt))
-      result = %*{ "updated": query[0]}
+      for q in query[1]:
+        let stmt = "UPDATE " & db_table & " " & q
+        pg.exec(sql(stmt))
+        result = %*{ "updated": query[0]}
     else:
       result = %*{"error_message": query[1]}
   except:
@@ -274,15 +279,27 @@ proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
 
 proc upsert_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
   # upserts on conflict on primary key
+  echo "\n\n---------\nDATA:" & $d
   let 
     pks = get_primary_keys(pg)
     pk = pks[db_table]
-    insert = genInsertStmt(pg, db_table, d, insertNull = false)
-    setStmt = genSetStmt(pg, db_table, d, genWhere = false)
-    query = insert[1] & " ON CONFLICT (" & pk & ") DO UPDATE " & setStmt[1]
+    valClause = genValuesClause(pg, db_table, d, insertNull = false)
+    setStmt = genSetStmt(pg, db_table, d)
 
-  pg.exec(sql(query))
-  result = %*{ "upserted": insert[0]}
+  var indx = 0
+  var query = ""
+  while indx < valClause[1].len:
+    query = "INSERT INTO " & db_table & " (" & valClause[0][indx].join(", ")
+    query.delete(query.len , query.len)
+    query = query & " )"
+    query = query & " VALUES " & valClause[1].join(", ")
+    query.delete(query.len - 2, query.len)
+    query = query & " )"
+    query = query & " ON CONFLICT (" & pk & ") DO"
+    query = query & " UPDATE " & setStmt[1][indx]
+    indx += 1
+    pg.exec(sql(query))
+    result = %*{ "upserted": valClause[0].len}
                  
 proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
   ## Deletes rows from a table given a list of ids as parameters

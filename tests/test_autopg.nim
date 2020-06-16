@@ -31,45 +31,55 @@ try:
     d = format(now(), f)
     item = %*{
       "id": 1,
-      "col1": "second column",
+      "col1": "item 1",
       "col2": true,
+      "col3": d
+    }
+    item0 = %*{
+      "id": 2,
+      "col1": "item 2",
+      "col2": false,
       "col3": d
     }
     
   # Insert data
   echo "Insert"
-  let rInsert = db.post_data(tableName, %*{"data": [item]})
-  doAssert($rInsert == """{"inserted":1}""")
+  let rInsert = db.post_data(tableName, %*{"data": [item, item0]})
+  doAssert($rInsert == """{"inserted":2}""")
 
   # Retrieve data
   let rGet = db.get_data(tableName)
-  doAssert($rGet == $(%*{"test_autopg":[item]}), "Get did not match expected result.")
+  doAssert($rGet == $(%*{"test_autopg":[item, item0]}), "Get did not match expected result.")
   
   # Update Data
   echo "Update"
   var item1 = item.copy()
   let d1 = format(now(), f)
-
-  item1["col1"] = %"updated value"
+  item1["col1"] = %"updated item 1"
   item1["col2"] = %false
   item1["col3"] = %d1
-  
+
+  var item2 = item0.copy()
+  item2["col1"] = %"updated item 2"
+  item2["col2"] = %true
+  item2["col3"] = %d1
+
   let
-    rUpdate = db.put_data(tableName, %*{"data": [item1]})
+    rUpdate = db.put_data(tableName, %*{"data": [item1, item2]})
     rUpdateGet = db.get_data(tableName)
 
   echo rUpdateGet
-  doAssert($rUpdate == """{"updated":1}""")
-  doAssert($rUpdateGet == $(%*{"test_autopg":[item1]}), "Update did not match expected result.")
+  doAssert($rUpdate == """{"updated":2}""")
+  doAssert($rUpdateGet == $(%*{"test_autopg":[item1, item2]}), "Update did not match expected result.")
   
   # Upsert data
-  var item2 = item1.copy()
-  item2["id"] = %2
-  item2["col1"] = %"upserted inserted value"
-  item2["col2"] = %false
+  var item3 = item1.copy()
+  item3["id"] = %2
+  item3["col1"] = %"upserted inserted value"
+  item3["col2"] = %false
   
   let
-    upserted = db.upsert_data(tableName, %*{"data": [item2]})
+    upserted = db.upsert_data(tableName, %*{"data": [item3]})
     getUpserted = db.get_data(tableName)
 
   echo getUpserted
@@ -79,15 +89,15 @@ try:
   item2["col2"] = %true
 
   let
-    upserted1 = db.upsert_data(tableName, %*{"data": [item2]})
+    upserted1 = db.upsert_data(tableName, %*{"data": [item3]})
     getUpserted1 = db.get_data(tableName)
 
   echo getUpserted1
   doAssert($upserted == """{"upserted":1}""")
    
 except Exception as e:
-  #raise e
   echo e.msg
+  raise e
   
 finally:
   echo "Dropping table."
