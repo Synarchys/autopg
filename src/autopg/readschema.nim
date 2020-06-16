@@ -86,8 +86,4 @@ proc toJson*(schema: seq[Table]): JsonNode =
               "comment": t.comment,
               "columns": cols,
               "relations": rels})
-  
-
-
-
 

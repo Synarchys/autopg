@@ -66,6 +66,25 @@ proc get_tables*(pg:DbConn): seq[DBTable] =
     let cols = pg.get_columns(r[0])
     result.add(DBTable(name:r[0], columns:cols))
 
+proc get_primary_keys*(pg: DBConn): Table[string, string] =
+  # returns table name and column name
+  # currently using only public schema
+  result = initTable[string, string]()
+  let rows = pg.getAllRows(
+    sql"""select tc.table_schema, tc.table_name, kc.column_name
+     from
+       information_schema.table_constraints tc,
+       information_schema.key_column_usage kc
+     where
+       tc.constraint_type = 'PRIMARY KEY'
+       and kc.table_name = tc.table_name and kc.table_schema = tc.table_schema
+       and kc.constraint_name = tc.constraint_name
+     order by 1, 2""")
+
+  for r in rows:
+    if r[0] == "public":
+      result[r[1]] = r[2]
+  
 proc get_schema*(pg: DBConn): JsonNode =
   ## Return a JsonNode representing the DB schema
   let tables = pg.get_tables()
@@ -116,18 +135,16 @@ proc extractJSonVal(c: DbColumn, item: JsonNode): string =
                
 proc genSQLValue(c: DbColumn, item: JsonNode): string =
   result = extractJSonVal(c, item) & ", "
-                     
-proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): JsonNode =
-  ## Inserts the contents of a JsonNode into a table. the format of the Json
+
+proc genInsertStmt(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): (int, string) =
+  ## Generates a sql statement for insertion
   ## data is:
-  ##
-  ##
   ## {"data": [ {<data item>}, {<data item>}, ...] }
   ##
   ## Fields not present in the data item are leaved for the table's default
   ##
   ## Fields not existing in the database are silently ignored
-
+  ## Returns statment, affected rows  
   echo "\n\n---------\nDATA:" & $d
   let db_schema = pg.get_tables()
   if d.kind == JObject:
@@ -139,7 +156,9 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): Js
       if tables.len > 0:
         columns = tables[0].columns
       else:
-        result = %*{"error_message":"invalid table"}
+        # TODO
+        #result = %*{"error_message":"invalid table"}
+        result = (-1, "invalid table")
       var values = ""
       for item in data:
         values = values & " ("
@@ -163,11 +182,108 @@ proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): Js
         statement = statement & "\"" & c.name & "\"" & ", "
       statement.delete(statement.len - 2, statement.len)
       statement = statement & ") VALUES " & values
-      echo "SQL:" & $statement & "\n-----------\n"
-      pg.exec(sql(statement))
-      echo "executed"
-      result = %*{ "inserted": data.len}
+      result = (data.len, statement)
+      
+proc post_data*(pg:DbConn, db_table: string, d: JsonNode, insertNull = true): JsonNode =
+  ## Inserts the contents of a JsonNode into a table. the format of the Json
+  ## data is:
+  ##
+  ##
+  ## {"data": [ {<data item>}, {<data item>}, ...] }
+  ##
+  ## Fields not present in the data item are leaved for the table's default
+  ##
+  ## Fields not existing in the database are silently ignored
+  let query = genInsertStmt(pg, db_table, d, insertNull)
+  if query[0] > -1:
+    pg.exec(sql(query[1]))
+    result = %*{ "inserted": query[0]}
+  else:
+    result = %*{"error_message": query[1]}
+               
+proc genSetStmt(pg:DbConn, db_table: string, d: JsonNode, genWhere: bool = true): (int, string) =
+  let
+    db_schema = pg.get_tables()
 
+  var
+    pks: Table[string, string]
+    pk: string
+      
+  if genWhere:
+      pks = get_primary_keys(pg)
+      pk = pks[db_table]
+  
+  if d.kind == JObject:
+    for k, v in d:
+      let data = v
+      let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
+      var columns: seq[DBColumn]
+      if tables.len > 0:
+        columns = tables[0].columns
+      else:
+        result = (-1,"invalid table")
+      var
+        setClause: string 
+        statement: string
+        whereStmt: string        
+      for item in data:
+        setClause = ""
+        statement = ""
+        whereStmt = ""        
+        for c in columns:
+          # var qt = "'"
+          if item.haskey(c.name) and item[c.name].kind == JNull:
+            # sets to NULL if the column name is passed and its value is JNull
+            # used to delete the value of a column
+            setClause = setClause & c.name & " =  null " & ", "
+          elif item.haskey(c.name):
+            setClause = setClause & c.name & " = "
+            setClause = setClause & genSQLValue(c, item)
+          if genWhere and pk != "" and c.name == pk:
+            whereStmt =  " WHERE " & c.name & " = " & extractJSonVal(c, item)
+
+        let lastComma = setClause.rfind(",")
+        setClause.delete(lastComma, lastComma + 1)
+        # var statement = "UPDATE " & db_table & " SET " & setClause & whereStmt
+        let statement = "SET " & setClause & whereStmt
+        result = (data.len, statement)
+    
+proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
+  ## Updates the contents of a JsonNode into a table. the format of the Json
+  ## data is:
+  ##
+  ##
+  ## {"data": [ {<data item>}, {<data item>}, ...] }
+  ##
+  ## Fields not present in the data item are leaved for the table's default
+  ##
+  ## Fields not existing in the database are silently ignored
+  try:
+    let query = genSetStmt(pg, db_table, d)
+    if query[0] > -1:
+      let stmt = "UPDATE " & db_table & & " " & query[1]
+      pg.exec(sql(stmt))
+      result = %*{ "updated": query[0]}
+    else:
+      result = %*{"error_message": query[1]}
+  except:
+    let e = getCurrentException()
+    echo e.getStackTrace()
+    echo "==> ERROR: " & getCurrentExceptionMsg()
+    result = %*{ "error": getCurrentExceptionMsg()}
+
+proc upsert_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
+  # upserts on conflict on primary key
+  let 
+    pks = get_primary_keys(pg)
+    pk = pks[db_table]
+    insert = genInsertStmt(pg, db_table, d, insertNull = false)
+    setStmt = genSetStmt(pg, db_table, d, genWhere = false)
+    query = insert[1] & " ON CONFLICT (" & pk & ") DO UPDATE " & setStmt[1]
+
+  pg.exec(sql(query))
+  result = %*{ "upserted": insert[0]}
+                 
 proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
   ## Deletes rows from a table given a list of ids as parameters
   ##
@@ -182,57 +298,3 @@ proc delete_data*(pg:DbConn, db_table: string, ctx: WebContext): JsonNode =
     statement.add ")"
   pg.exec(sql(statement))
   result = %*{"deleted": ctx.request.paramList.len}
-
-proc put_data*(pg:DbConn, db_table: string, d: JsonNode): JsonNode =
-  ## Updates the contents of a JsonNode into a table. the format of the Json
-  ## data is:
-  ##
-  ##
-  ## {"data": [ {<data item>}, {<data item>}, ...] }
-  ##
-  ## Fields not present in the data item are leaved for the table's default
-  ##
-  ## Fields not existing in the database are silently ignored
-  let db_schema = pg.get_tables()
-  try:
-    if d.kind == JObject:
-      for k, v in d:
-        let data = v
-        let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
-        var columns: seq[DBColumn]
-        if tables.len > 0:
-          columns = tables[0].columns
-        else:
-          result = %*{"error_message":"invalid table"}
-        var
-          setClause: string 
-          statement: string
-          whereStmt = " WHERE id = "
-        
-        for item in data:
-          setClause = ""
-          statement = ""
-          for c in columns:
-            # echo "Column name: " & c.name & " || type: " & c.ctype
-            var qt = "'"
-            if item.haskey(c.name) and item[c.name].kind == JNull:
-              # sets to NULL if the column name is passed and its value is JNull
-              # used to delete the value of a column
-              setClause = setClause & c.name & " =  null " & ", "
-            elif item.haskey(c.name):
-              setClause = setClause & c.name & " = "
-              setClause = setClause & genSQLValue(c, item)
-            if c.name == "id":
-              # if there's no id there be no `where clause`, use pk from schema?
-              whereStmt =  whereStmt & extractJSonVal(c, item)
-
-          let lastComma = setClause.rfind(",")
-          setClause.delete(lastComma, lastComma + 1)
-          var statement = "UPDATE " & db_table & " SET " & setClause & whereStmt
-          result = %*{ "updated": data.len}
-    else:
-      result = %*{ "error": "invalid format"}
-  except:
-    echo "==> ERROR: " & getCurrentExceptionMsg()
-    result = %*{ "error": getCurrentExceptionMsg()}
-
