@@ -14,11 +14,11 @@ proc auto_api*(db: DbConn, ctx: WebContext): WebContext =
   let schema = db.get_tables()
   var tables: seq[string] = @[]
   for t in schema:
-    echo "table: " & t.name
+#    echo "table: " & t.name
     tables.add(t.name)
-  echo "\ntables: " & $tables & "\n====\n"
+#  echo "\ntables: " & $tables & "\n====\n"
   let tname = ctx.request.urlpath[1]
-  echo "TNAME = " & tname
+#  echo "TNAME = " & tname
   if tname == "schema":
     let schema = db.readTables().toJson()
     #echo schema.pretty()
