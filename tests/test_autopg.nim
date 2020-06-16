@@ -4,7 +4,6 @@ import asynchttpserver, uri
 import noah / asynccontext
 import ../src/autopg
 
-# test that it generates a proper insert, update and delete.
 const
   user = "postgres"
   password = "postgres"
@@ -57,15 +56,6 @@ try:
 
   doAssert($rUpdate == """{"updated":1}""")
   
-  #doAssert($rUpdateGet == $(%*{"test_autopg":[item1]}), "Did not match expected result.")
-  # Upsert data
-  
-  # TODO Delete Data
-  # var r = Request()
-  # var u = parseUri("http://host?id=" & $(item1["id"].getInt))
-  # r.url = u
-  # let ctxt = r.createWebContext()
-  # echo db.delete_data(tableName, ctxt)
 except:
   echo getCurrentExceptionMsg()
   db.exec(sql"drop table public.test_autopg")
