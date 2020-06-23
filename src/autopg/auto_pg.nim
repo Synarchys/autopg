@@ -1,15 +1,8 @@
 ## Postgres DB driver extensions for auto generated API
 ## 
-import db_postgres,
-       os,
-       json,
-       times,
-       strutils,
-       tables,
-       uri,
-       sequtils,
-       strformat,
-       sugar   
+import
+  db_postgres,  os, json, times, strutils, tables, uri, sequtils, strformat,
+  sugar
 
 import noah / webcontext 
 
@@ -25,7 +18,7 @@ type
     name*: string 
     columns*: seq[DBColumn]
     
-proc get_columns*(pg:DbConn, db_table: string): seq[DBColumn] =
+proc get_columns*(pg:DbConn, db_table: string, schema = "public"): seq[DBColumn] =
   ## Gets all columns from a given table
   result = @[]
   let rows = pg.getAllRows(sql"""
@@ -36,8 +29,8 @@ proc get_columns*(pg:DbConn, db_table: string): seq[DBColumn] =
      where
        table_catalog = current_database()
        and table_name = ?
-       and table_schema = 'public'
-    """, db_table)
+       and table_schema = ?
+    """, db_table, schema)
   for r in rows:
     var column = DBColumn(name:r[0], ctype:r[1])
     case column.ctype
@@ -50,7 +43,7 @@ proc get_columns*(pg:DbConn, db_table: string): seq[DBColumn] =
     #, precision: r[2], length: r[3]
     result.add(column)
   
-proc get_tables*(pg:DbConn): seq[DBTable] =
+proc get_tables*(pg:DbConn, schema = "public"): seq[DBTable] =
   result = @[]
   let rows = pg.getAllRows(sql"""
    select
@@ -59,16 +52,17 @@ proc get_tables*(pg:DbConn): seq[DBTable] =
      information_schema.tables
    where
      table_catalog = current_database()
-     and table_schema = 'public'
+     and table_schema = ?
      and table_type = 'BASE TABLE';
-  """)
+  """, schema)
   for r in rows:
-    let cols = pg.get_columns(r[0])
+    let cols = pg.get_columns(r[0], schema)
     result.add(DBTable(name:r[0], columns:cols))
 
-proc get_primary_keys*(pg: DBConn): Table[string, string] =
+proc get_primary_keys*(pg: DBConn, schema = "public"): Table[string, string] =
   # returns table name and column name
   # currently using only public schema
+  # TODO: add schema to query
   result = initTable[string, string]()
   let rows = pg.getAllRows(
     sql"""select tc.table_schema, tc.table_name, kc.column_name
@@ -82,15 +76,26 @@ proc get_primary_keys*(pg: DBConn): Table[string, string] =
      order by 1, 2""")
 
   for r in rows:
-    if r[0] == "public":
+    if r[0] == schema:
       result[r[1]] = r[2]
   
 proc get_schema*(pg: DBConn): JsonNode =
   ## Return a JsonNode representing the DB schema
   let tables = pg.get_tables()
   result = %* tables
+
+proc extractJSonVal(c: DbColumn, item: JsonNode): string =
+    case c.ctype:
+    of "int", "integer", "bigint", "smallint":
+      result = $item[c.name].getInt()
+    of "boolean":
+      result = $item[c.name].getBool()
+    of "numeric", "double precision":
+      result = $item[c.name].getFloat
+    else:
+      result = dbQuote(item[c.name].getStr())
   
-proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil): JsonNode =
+proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil, schema = "public"): JsonNode =
   ## Given a table and a query, returns a JsonNode containing the result.
   ##
   ## Only very rigid '=' queries are allowed now an\d can couse exceptios if
@@ -98,7 +103,7 @@ proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil): JsonNode =
   let db_schema = pg.get_tables()
   var whereClause = ""
   
-  if ctx != nil and ctx.request.paramTable.len > 0 :
+  if ctx != nil and ctx.request.paramTable.len > 0:
     let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
     var columns: seq[DBColumn]
     if tables.len > 0:
@@ -113,24 +118,56 @@ proc get_data*(pg:DbConn, db_table: string, ctx: WebContext = nil): JsonNode =
         let val = decodeUrl(value)
         whereClause.add(key & " = '" & val & "' and ")
     whereClause.delete(whereClause.len - 4, whereClause.len - 1)
-  var statement = "select to_json(k) from (select array_to_json(array_agg(row_to_json(j))) as " & db_table & " from (select * from " & db_table & whereClause & " ) j) k"
+  var statement = "select to_json(k) from (select array_to_json(array_agg(row_to_json(j))) as " &
+    db_table & " from (select * from " & schema & "." & db_table & whereClause & " ) j) k"
+    
   let rows = pg.getAllRows(sql(statement))
   if rows[0].len > 0:
     result = parseJson($rows[0][0])
   else:
     result = %*{"message": "No rows found"}
 
-proc extractJSonVal(c: DbColumn, item: JsonNode): string =
-    case c.ctype:
-    of "int", "integer", "bigint", "smallint":
-      result = $item[c.name].getInt()
-    of "boolean":
-      result = $item[c.name].getBool()
-    of "numeric", "double precision":
-      result = $item[c.name].getFloat
-    else:
-      result = dbQuote(item[c.name].getStr())
-               
+proc get_data*(pg:DbConn, queryVars: JsonNode, schema = "public"): JsonNode =
+  # Use json to construct the query
+  let db_schema = pg.get_tables(schema)
+  var whereClause = ""
+  if queryVars != nil:
+    result = %*{}
+    var qvTables: seq[string] = @[]
+    for k in queryVars.keys():
+      qvTables.add k
+    # FIXME:
+    for db_table in qvTables:
+      let tables = db_schema.filter do (t:DBTable) -> bool : t.name == db_table
+      var columns = initTable[string, DbColumn]() # seq[DBColumn]
+      if tables.len > 0:
+        for column in tables[0].columns:
+          columns[column.name] = column
+      else:
+        # FIXME set the error in the table
+        result = %*{"error_message":"invalid table"}
+        return
+      if queryVars[db_table].hasKey("where"):
+        let where = queryVars[db_table]["where"]
+        whereClause = " where "
+        for key, value in where.pairs():
+          if columns.haskey key:
+            let val = columns[key].extractJSonVal(where)
+            # FIXME validate val not nil != ""
+            whereClause.add(key & " = '" & val & "' and ")
+            whereClause.delete(whereClause.len - 4, whereClause.len - 1)
+        # FIXME: exclude where if there are no values
+      var statement = "select to_json(k) from (select array_to_json(array_agg(row_to_json(j))) as " &
+        db_table & " from (select * from " & schema & "." & db_table & whereClause & " ) j) k"
+      echo statement
+      let rows = pg.getAllRows(sql(statement))
+      if rows[0].len > 0:
+        result{"data", db_table} = parseJson($rows[0][0])[db_table]
+      else:
+        result = %*{"message": "No rows found"}
+  else: 
+    result = %*{"message": "Bad Query"}
+                              
 proc genSQLValue(c: DbColumn, item: JsonNode): string =
   result = extractJSonVal(c, item) & ", "
 
